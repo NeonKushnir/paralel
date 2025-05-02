@@ -51,8 +51,8 @@ int main() {
     auto end = high_resolution_clock::now();
 
     duration<double> elapsed = end - start;
-    cout << "Відсортовано елементів: " << size << endl;
-    cout << "Час сортування: " << elapsed.count() << " секунд" << endl;
+    cout << "Total elements sorted: " << size << endl;
+    cout << "Total elapsed time: " << elapsed.count() << " seconds" << endl;
 
     return 0;
 }
