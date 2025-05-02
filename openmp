@@ -1,0 +1,73 @@
+#include <iostream>
+#include <vector>
+#include <cstdlib>
+#include <ctime>
+#include <chrono>
+#include <omp.h>
+
+using namespace std;
+using namespace chrono;
+
+void merge(vector<int>& arr, vector<int>& left, vector<int>& right) {
+    arr.clear();
+    int i = 0, j = 0;
+    while (i < left.size() && j < right.size()) {
+        if (left[i] < right[j]) arr.push_back(left[i++]);
+        else arr.push_back(right[j++]);
+    }
+    while (i < left.size()) arr.push_back(left[i++]);
+    while (j < right.size()) arr.push_back(right[j++]);
+}
+
+void mergeSort(vector<int>& arr) {
+    if (arr.size() <= 1) return;
+
+    int mid = arr.size() / 2;
+    vector<int> left(arr.begin(), arr.begin() + mid);
+    vector<int> right(arr.begin() + mid, arr.end());
+
+#pragma omp task shared(left)
+    mergeSort(left);
+
+#pragma omp task shared(right)
+    mergeSort(right);
+
+#pragma omp taskwait
+    merge(arr, left, right);
+}
+
+int main() {
+    const int totalSize = 1000000;
+    vector<int> arr(totalSize);
+    srand(time(0));
+    for (int i = 0; i < totalSize; ++i)
+        arr[i] = rand() % 100000;
+
+    omp_set_num_threads(20);
+    vector<double> threadTimes(omp_get_max_threads(), 0.0);
+    auto start = high_resolution_clock::now();
+
+#pragma omp parallel
+    {
+        int tid = omp_get_thread_num();
+        auto localStart = high_resolution_clock::now();
+
+#pragma omp single
+        mergeSort(arr);
+
+        auto localEnd = high_resolution_clock::now();
+        threadTimes[tid] += duration<double>(localEnd - localStart).count();
+    }
+
+    auto end = high_resolution_clock::now();
+    double totalTime = duration<double>(end - start).count();
+
+    cout << "Total elements sorted: " << totalSize << endl;
+    cout << "Number of threads: " << omp_get_max_threads() << endl;
+    cout << "Total elapsed time: " << totalTime << " seconds" << endl;
+    for (int i = 0; i < omp_get_max_threads(); ++i) {
+        cout << "Thread " << i << " execution time: " << threadTimes[i] << " seconds" << endl;
+    }
+
+    return 0;
+}
