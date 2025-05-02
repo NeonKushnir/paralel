@@ -1,0 +1,100 @@
+#include <mpi.h>
+#include <iostream>
+#include <vector>
+#include <algorithm>
+#include <cstdlib>
+#include <ctime>
+
+using namespace std;
+
+void merge(vector<int>& arr, vector<int>& left, vector<int>& right) {
+    arr.clear();
+    int i = 0, j = 0;
+    while (i < left.size() && j < right.size()) {
+        if (left[i] < right[j]) arr.push_back(left[i++]);
+        else arr.push_back(right[j++]);
+    }
+    while (i < left.size()) arr.push_back(left[i++]);
+    while (j < right.size()) arr.push_back(right[j++]);
+}
+
+void mergeSort(vector<int>& arr) {
+    if (arr.size() <= 1) return;
+    int mid = arr.size() / 2;
+    vector<int> left(arr.begin(), arr.begin() + mid);
+    vector<int> right(arr.begin() + mid, arr.end());
+    mergeSort(left);
+    mergeSort(right);
+    merge(arr, left, right);
+}
+
+int main(int argc, char** argv) {
+    MPI_Init(&argc, &argv);
+    int rank, size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+    int totalSize = 1000000;
+    vector<int> fullData;
+
+    if (rank == 0) {
+        srand(time(0));
+        fullData.resize(totalSize);
+        for (int i = 0; i < totalSize; ++i)
+            fullData[i] = rand() % 100000;
+    }
+
+    int localSize = totalSize / size;
+    vector<int> localData(localSize);
+    MPI_Scatter(fullData.data(), localSize, MPI_INT, localData.data(), localSize, MPI_INT, 0, MPI_COMM_WORLD);
+
+    double localStart = MPI_Wtime();
+    mergeSort(localData);
+    double localEnd = MPI_Wtime();
+    double localElapsed = localEnd - localStart;
+
+    int step = 1;
+    while (step < size) {
+        if (rank % (2 * step) == 0) {
+            if (rank + step < size) {
+                int incomingSize;
+                MPI_Recv(&incomingSize, 1, MPI_INT, rank + step, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                vector<int> incoming(incomingSize);
+                MPI_Recv(incoming.data(), incomingSize, MPI_INT, rank + step, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                merge(localData, localData, incoming);
+            }
+        }
+        else {
+            int dest = rank - step;
+            int s = localData.size();
+            MPI_Send(&s, 1, MPI_INT, dest, 0, MPI_COMM_WORLD);
+            MPI_Send(localData.data(), s, MPI_INT, dest, 0, MPI_COMM_WORLD);
+            break;
+        }
+        step *= 2;
+    }
+
+    double globalStart, globalEnd;
+    double maxLocalTime;
+    MPI_Reduce(&localStart, &globalStart, 1, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&localEnd, &globalEnd, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&localElapsed, &maxLocalTime, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+
+    double* allTimes = nullptr;
+    if (rank == 0)
+        allTimes = new double[size];
+    MPI_Gather(&localElapsed, 1, MPI_DOUBLE, allTimes, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+    if (rank == 0) {
+        cout << "Total elements sorted: " << totalSize << endl;
+        cout << "Number of processes: " << size << endl;
+        cout << "Total elapsed time: " << (globalEnd - globalStart) << " seconds" << endl;
+        for (int i = 0; i < size; ++i) {
+            cout << "Process " << i << " execution time: " << allTimes[i] << " seconds" << endl;
+        }
+        delete[] allTimes;
+    }
+
+    MPI_Finalize();
+    return 0;
+}
