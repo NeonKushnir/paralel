@@ -7,39 +7,45 @@
 
 using namespace std;
 
-/// Функція злиття двох відсортованих підмасивів у один загальний
-void merge(vector<int>& arr, vector<int>& left, vector<int>& right) {
-    arr.clear();
-    int i = 0, j = 0;
-    // Порівнюємо елементи з обох підмасивів і додаємо у результат
-    while (i < left.size() && j < right.size()) {
-        if (left[i] < right[j]) arr.push_back(left[i++]);
-        else arr.push_back(right[j++]);
+// Злиття двох відсортованих підмасивів: [left, mid) та [mid, right)
+void merge(vector<int>& arr, vector<int>& temp, int left, int mid, int right) {
+    int i = left, j = mid, k = left;
+    while (i < mid && j < right) {
+        if (arr[i] < arr[j]) temp[k++] = arr[i++];
+        else temp[k++] = arr[j++];
     }
-    // Додаємо залишки з лівого або правого масиву
-    while (i < left.size()) arr.push_back(left[i++]);
-    while (j < right.size()) arr.push_back(right[j++]);
+    while (i < mid) temp[k++] = arr[i++];
+    while (j < right) temp[k++] = arr[j++];
+    for (int l = left; l < right; ++l)
+        arr[l] = temp[l];
 }
 
-/// Рекурсивна функція сортування методом Merge Sort
-void mergeSort(vector<int>& arr) {
-    if (arr.size() <= 1) return;
-    int mid = arr.size() / 2;
-    vector<int> left(arr.begin(), arr.begin() + mid);
-    vector<int> right(arr.begin() + mid, arr.end());
-    mergeSort(left);
-    mergeSort(right);
-    merge(arr, left, right);
+// Рекурсивне MergeSort (без OpenMP директив, чисто для MPI)
+void mergeSort(vector<int>& arr, vector<int>& temp, int left, int right, int threshold) {
+    if (right - left <= 1) return;
+    int mid = (left + right) / 2;
+
+    if (right - left > threshold) {
+        mergeSort(arr, temp, left, mid, threshold);
+        mergeSort(arr, temp, mid, right, threshold);
+    }
+    else {
+        mergeSort(arr, temp, left, mid, threshold);
+        mergeSort(arr, temp, mid, right, threshold);
+    }
+
+    merge(arr, temp, left, mid, right);
 }
 
 int main(int argc, char** argv) {
     MPI_Init(&argc, &argv);
 
     int rank, size;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank); 
-    MPI_Comm_size(MPI_COMM_WORLD, &size); 
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-    const int totalSize = 1000000;         
+    const int totalSize = 1000000;
+    const int threshold = 1000;
     vector<int> fullData;
 
     // Генерація повного масиву даних
@@ -53,37 +59,45 @@ int main(int argc, char** argv) {
     // Кожен процес отримує однакову кількість елементів
     int localSize = totalSize / size;
     vector<int> localData(localSize);
+    vector<int> temp(localSize);
 
     // Розсилка частин масиву всім процесам
     MPI_Scatter(fullData.data(), localSize, MPI_INT,
         localData.data(), localSize, MPI_INT,
         0, MPI_COMM_WORLD);
 
-    // З моменту початку сортування до завершення злиття
+    // Засікаємо час
     double startTime = MPI_Wtime();
 
-    // Локальне сортування (кожен процес сортує свою частину)
-    mergeSort(localData);
+    // Локальне сортування
+    mergeSort(localData, temp, 0, localSize, threshold);
 
-    // Паралельне злиття
+    // Паралельне злиття результатів
     int step = 1;
     while (step < size) {
         if (rank % (2 * step) == 0) {
             if (rank + step < size) {
                 int incomingSize;
                 MPI_Recv(&incomingSize, 1, MPI_INT, rank + step, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                vector<int> incoming(incomingSize);
+                vector<int> incoming(incomingSize), incomingTemp(incomingSize);
                 MPI_Recv(incoming.data(), incomingSize, MPI_INT, rank + step, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                merge(localData, localData, incoming);  // Злиття отриманих даних
+
+                // Розширення локального буфера
+                vector<int> combined(localData.size() + incomingSize);
+                copy(localData.begin(), localData.end(), combined.begin());
+                copy(incoming.begin(), incoming.end(), combined.begin() + localData.size());
+
+                vector<int> combinedTemp(combined.size());
+                mergeSort(combined, combinedTemp, 0, combined.size(), threshold);
+                localData = combined;
             }
         }
         else {
-            // Відправляємо свою частину процесу з меншим рангом
             int dest = rank - step;
             int s = localData.size();
             MPI_Send(&s, 1, MPI_INT, dest, 0, MPI_COMM_WORLD);
             MPI_Send(localData.data(), s, MPI_INT, dest, 0, MPI_COMM_WORLD);
-            break; 
+            break;
         }
         step *= 2;
     }
@@ -91,7 +105,7 @@ int main(int argc, char** argv) {
     double endTime = MPI_Wtime();
     double localTotalTime = endTime - startTime;
 
-    // Збір часу виконання
+    // Збір часу
     double* allTimes = nullptr;
     if (rank == 0)
         allTimes = new double[size];
@@ -100,7 +114,7 @@ int main(int argc, char** argv) {
         allTimes, 1, MPI_DOUBLE,
         0, MPI_COMM_WORLD);
 
-    // Вивід статистики
+    // Вивід результатів
     if (rank == 0) {
         double globalMax = *max_element(allTimes, allTimes + size);
 
